@@ -66,8 +66,8 @@ import java.util.concurrent.ScheduledFuture;
 public class LogbackValve extends ValveBase implements Lifecycle, Context, AppenderAttachable<IAccessEvent>, FilterAttachable<IAccessEvent> {
 
     private final static String DEFAULT_CONFIG_FILE = "conf/logback-access.xml";
-    private final static String CATALINA_BASE_KEY = "catalina.base";
-    private final static String CATALINA_HOME_KEY = "catalina.home";
+    final static String CATALINA_BASE_KEY = "catalina.base";
+    final static String CATALINA_HOME_KEY = "catalina.home";
 
     private final LifeCycleManager lifeCycleManager = new LifeCycleManager();
     private final LogbackLock configurationLock = new LogbackLock();

@@ -26,8 +26,8 @@ import ch.qos.logback.core.status.StatusChecker;
 
 public class LogbackValveTest {
 
-    LogbackValve valve = new LogbackValve();
-    StatusChecker checker = new StatusChecker(valve);
+    private LogbackValve valve = new LogbackValve();
+    private StatusChecker checker = new StatusChecker(valve);
 
     @After
     public void tearDown() {
