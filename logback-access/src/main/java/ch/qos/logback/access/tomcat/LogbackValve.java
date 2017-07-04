@@ -1,18 +1,42 @@
 /**
  * Logback: the reliable, generic, fast and flexible logging framework.
  * Copyright (C) 1999-2015, QOS.ch. All rights reserved.
- *
+ * <p>
  * This program and the accompanying materials are dual-licensed under
  * either the terms of the Eclipse Public License v1.0 as published by
  * the Eclipse Foundation
- *
- *   or (per the licensee's choosing)
- *
+ * <p>
+ * or (per the licensee's choosing)
+ * <p>
  * under the terms of the GNU Lesser General Public License version 2.1
  * as published by the Free Software Foundation.
  */
 package ch.qos.logback.access.tomcat;
 
+import ch.qos.logback.access.AccessConstants;
+import ch.qos.logback.access.joran.JoranConfigurator;
+import ch.qos.logback.access.spi.AccessEvent;
+import ch.qos.logback.access.spi.IAccessEvent;
+import ch.qos.logback.core.*;
+import ch.qos.logback.core.boolex.EventEvaluator;
+import ch.qos.logback.core.filter.Filter;
+import ch.qos.logback.core.joran.spi.JoranException;
+import ch.qos.logback.core.spi.*;
+import ch.qos.logback.core.status.*;
+import ch.qos.logback.core.util.ExecutorServiceUtil;
+import ch.qos.logback.core.util.Loader;
+import ch.qos.logback.core.util.OptionHelper;
+import ch.qos.logback.core.util.StatusListenerConfigHelper;
+import org.apache.catalina.Lifecycle;
+import org.apache.catalina.LifecycleException;
+import org.apache.catalina.LifecycleListener;
+import org.apache.catalina.LifecycleState;
+import org.apache.catalina.connector.Request;
+import org.apache.catalina.connector.Response;
+import org.apache.catalina.valves.ValveBase;
+
+import javax.servlet.ServletContext;
+import javax.servlet.ServletException;
 import java.io.File;
 import java.io.IOException;
 import java.net.MalformedURLException;
@@ -25,90 +49,47 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 
-import javax.servlet.ServletContext;
-import javax.servlet.ServletException;
-
-import org.apache.catalina.Lifecycle;
-import org.apache.catalina.LifecycleException;
-import org.apache.catalina.LifecycleListener;
-import org.apache.catalina.LifecycleState;
-import org.apache.catalina.connector.Request;
-import org.apache.catalina.connector.Response;
-import org.apache.catalina.valves.ValveBase;
-
-import ch.qos.logback.access.AccessConstants;
-import ch.qos.logback.access.joran.JoranConfigurator;
-import ch.qos.logback.access.spi.AccessEvent;
-import ch.qos.logback.access.spi.IAccessEvent;
-import ch.qos.logback.core.Appender;
-import ch.qos.logback.core.BasicStatusManager;
-import ch.qos.logback.core.Context;
-import ch.qos.logback.core.CoreConstants;
-import ch.qos.logback.core.LifeCycleManager;
-import ch.qos.logback.core.boolex.EventEvaluator;
-import ch.qos.logback.core.filter.Filter;
-import ch.qos.logback.core.joran.spi.JoranException;
-import ch.qos.logback.core.spi.AppenderAttachable;
-import ch.qos.logback.core.spi.AppenderAttachableImpl;
-import ch.qos.logback.core.spi.FilterAttachable;
-import ch.qos.logback.core.spi.FilterAttachableImpl;
-import ch.qos.logback.core.spi.FilterReply;
-import ch.qos.logback.core.spi.LifeCycle;
-import ch.qos.logback.core.spi.LogbackLock;
-import ch.qos.logback.core.status.ErrorStatus;
-import ch.qos.logback.core.status.InfoStatus;
-import ch.qos.logback.core.status.OnConsoleStatusListener;
-import ch.qos.logback.core.status.Status;
-import ch.qos.logback.core.status.StatusManager;
-import ch.qos.logback.core.status.WarnStatus;
-import ch.qos.logback.core.util.ExecutorServiceUtil;
-import ch.qos.logback.core.util.Loader;
-import ch.qos.logback.core.util.OptionHelper;
-import ch.qos.logback.core.util.StatusListenerConfigHelper;
-
 //import org.apache.catalina.Lifecycle;
 
 /**
  * This class is an implementation of tomcat's Valve interface, by extending
  * ValveBase.
- * 
+ *
  * <p>
  * For more information on using LogbackValve please refer to the online
  * documentation on <a
  * href="http://logback.qos.ch/access.html#tomcat">logback-acces and tomcat</a>.
- * 
+ *
  * @author Ceki G&uuml;lc&uuml;
  * @author S&eacute;bastien Pennec
  */
 public class LogbackValve extends ValveBase implements Lifecycle, Context, AppenderAttachable<IAccessEvent>, FilterAttachable<IAccessEvent> {
 
-    public final static String DEFAULT_FILENAME = "logback-access.xml";
-    public final static String DEFAULT_CONFIG_FILE = "conf" + File.separatorChar + DEFAULT_FILENAME;
-    final static String CATALINA_BASE_KEY = "catalina.base";
-    final static String CATALINA_HOME_KEY = "catalina.home";
+    private final static String DEFAULT_CONFIG_FILE = "conf/logback-access.xml";
+    private final static String CATALINA_BASE_KEY = "catalina.base";
+    private final static String CATALINA_HOME_KEY = "catalina.home";
 
     private final LifeCycleManager lifeCycleManager = new LifeCycleManager();
-
-    private long birthTime = System.currentTimeMillis();
-    LogbackLock configurationLock = new LogbackLock();
+    private final LogbackLock configurationLock = new LogbackLock();
 
     // Attributes from ContextBase:
     private String name;
-    StatusManager sm = new BasicStatusManager();
+    private FilterAttachableImpl<IAccessEvent> fai = new FilterAttachableImpl<IAccessEvent>();
+    private AppenderAttachableImpl<IAccessEvent> aai = new AppenderAttachableImpl<IAccessEvent>();
+    private String filenameOption;
+    private boolean quiet;
+    private boolean started;
+    private boolean alreadySetLogbackStatusManager = false;
+    private StatusManager sm = new BasicStatusManager();
+    private ScheduledExecutorService scheduledExecutorService;
+
     // TODO propertyMap should be observable so that we can be notified
     // when it changes so that a new instance of propertyMap can be
     // serialized. For the time being, we ignore this shortcoming.
-    Map<String, String> propertyMap = new HashMap<String, String>();
-    Map<String, Object> objectMap = new HashMap<String, Object>();
-    private FilterAttachableImpl<IAccessEvent> fai = new FilterAttachableImpl<IAccessEvent>();
+    private Map<String, String> propertyMap = new HashMap<String, String>();
+    private Map<String, Object> objectMap = new HashMap<String, Object>();
 
-    AppenderAttachableImpl<IAccessEvent> aai = new AppenderAttachableImpl<IAccessEvent>();
-    String filenameOption;
-    boolean quiet;
-    boolean started;
-    boolean alreadySetLogbackStatusManager = false;
-
-    private ScheduledExecutorService scheduledExecutorService;
+    private long birthTime = System.currentTimeMillis();
 
     public LogbackValve() {
         putObject(CoreConstants.EVALUATOR_MAP, new HashMap<String, EventEvaluator<?>>());
@@ -130,9 +111,6 @@ public class LogbackValve extends ValveBase implements Lifecycle, Context, Appen
             addInfo("filename property not set. Assuming [" + DEFAULT_CONFIG_FILE + "]");
             filename = DEFAULT_CONFIG_FILE;
         }
-
-        // String catalinaBase = OptionHelper.getSystemProperty(CATALINA_BASE_KEY);
-        // String catalinaHome = OptionHelper.getSystemProperty(CATALINA_BASE_KEY);
 
         File configFile = searchForConfigFileTomcatProperty(filename, CATALINA_BASE_KEY);
         if (configFile == null) {
@@ -188,7 +166,7 @@ public class LogbackValve extends ValveBase implements Lifecycle, Context, Appen
             addInfo("Found configuration file [" + candidatePath + "] using property \"" + propertyKey + "\"");
             return candidateFile;
         } else {
-            addInfo("Could NOT configuration file [" + candidatePath + "] using property \"" + propertyKey + "\"");
+            addInfo("Could NOT Find configuration file [" + candidatePath + "] using property \"" + propertyKey + "\"");
             return null;
         }
     }
